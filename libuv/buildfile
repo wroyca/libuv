@@ -1,58 +1,90 @@
-if ($c.target.class == 'windows')
-{
-    c.poptions =+ "-DWIN32_LEAN_AND_MEAN" "-D_WIN32_WINNT=0x0602"
-    if ($c.target.system == 'mingw32')
-    {
-        c.libs =+ "-lpsapi" "-luser32" "-ladvapi32" "-liphlpapi" "-luserenv" "-lws2_32"
-    }
-    else
-    {
-        c.libs =+ "psapi.lib" "user32.lib" "advapi32.lib" "iphlpapi.lib" "userenv.lib" "ws2_32.lib"
-    }
-}
-else
-{
-    c.poptions =+ "-D_FILE_OFFSET_BITS=64" "-D_LARGEFILE_SOURCE"
-}
+tclass = $c.target.class
+tsys   = $c.target.system
 
-if ($c.target.class != 'windows')
-{
-    c.poptions =+ "-D_GNU_SOURCE" "-D_POSIX_C_SOURCE=200112"
-    c.libs =+ "-lpthread" "-ldl" "-lrt"
-}
+linux   = ($tclass == 'linux')
+macos   = ($tclass == 'macos')
+bsd     = ($tclass == 'bsd')
+windows = ($tclass == 'windows')
 
-if ($c.target.class == 'macos')
-{
-    c.poptions =+ "-D_DARWIN_UNLIMITED_SELECT=1" "-D_DARWIN_USE_64_BIT_INODE=1"
-}
+freebsd = ($tsys == 'freebsd')
+netbsd  = ($tsys == 'netbsd')
+openbsd = ($tsys == 'openbsd')
 
-lib{uv}: \
-    include/h{uv} \
-    include/uv/h{aix bsd darwin errno linux os390 posix stdint-msvc2008 sunos threadpool tree unix version win} \
-    src/c{fs-poll idna inet random strscpy threadpool timer uv-common uv-data-getter-setters version} \
-    src/h{heap-inl idna queue strscpy uv-common}
+# Note that the source file sets mirror the uv_sources variable in
+# upstream's CMakeLists.txt.
+#
+lib{uv}: include/h{**} src/{h c}{*}
 
-lib{uv}: src/win/c{async core detect-wakeup dl error fs fs-event getaddrinfo getnameinfo handle loop-watcher pipe thread poll process process-stdio signal snprintf stream tcp tty udp util winapi winsock}: include = ($c.target.class == 'windows')
-lib{uv}: src/win/h{atomicops-inl fs-fd-hash-inl handle-inl internal req-inl stream-inl winapi winsock}: include = ($c.target.class == 'windows')
-lib{uv}: src/unix/c{async core dl fs getaddrinfo getnameinfo loop-watcher loop pipe poll process random-devurandom signal stream tcp thread tty udp}: include = ($c.target.class != 'windows')
-lib{uv}: src/unix/h{atomic-ops internal spinlock}: include = ($c.target.class != 'windows')
-lib{uv}: src/unix/c{proctitle linux-core linux-inotify linux-syscalls procfs-exepath random-getrandom random-sysctl-linux epoll}: include = ($c.target.class == 'linux')
-lib{uv}: src/unix/h{linux-syscalls}: include = ($c.target.class == 'linux')
-lib{uv}: src/unix/c{darwin-proctitle darwin fsevents}: include = ($c.target.class == 'macos')
-lib{uv}: src/unix/h{darwin-stub}: include = ($c.target.class == 'macos')
-lib{uv}: src/unix/c{freebsd posix-hrtime bsd-proctitle bsd-ifaddrs kqueue random-getrandom}: include = ($c.target.class == 'freebsd')
-lib{uv}: src/unix/c{posix-hrtime bsd-proctitle bsd-ifaddrs kqueue random-getentropy openbsd}: include = ($c.target.class == 'openbsd')
+lib{uv}: src/win/{h c}{*}: include = $windows
 
+lib{uv}: src/unix/h{internal}: include = (!$windows)
+lib{uv}: src/unix/c{async core dl fs getaddrinfo getnameinfo loop-watcher  \
+                    loop pipe poll process random-devurandom signal stream \
+                    tcp thread tty udp}: include = (!$windows)
+
+lib{uv}: src/unix/c{linux procfs-exepath random-getrandom \
+                    random-sysctl-linux}: include = $linux
+
+lib{uv}: src/unix/c{proctitle}: include = ($linux || $macos)
+
+lib{uv}: src/unix/h{darwin-stub darwin-syscalls}:      include = $macos
+lib{uv}: src/unix/c{darwin darwin-proctitle fsevents}: include = $macos
+
+lib{uv}: src/unix/c{bsd-ifaddrs kqueue}:         include = ($macos || $bsd)
+lib{uv}: src/unix/c{bsd-proctitle posix-hrtime}: include = $bsd
+
+lib{uv}: src/unix/c{random-getentropy}: include = ($macos || $openbsd)
+lib{uv}: src/unix/c{random-getrandom}:  include = $freebsd
+
+lib{uv}: src/unix/c{freebsd}: include = $freebsd
+lib{uv}: src/unix/c{netbsd}:  include = $netbsd
+lib{uv}: src/unix/c{openbsd}: include = $openbsd
+
+# Build options.
+#
 c.poptions =+ "-I$src_base/include" "-I$src_base/src"
 
-lib{uv}:
+objs{*}: c.poptions += -DBUILDING_UV_SHARED=1
+
+if $windows
+  c.poptions += -DWIN32_LEAN_AND_MEAN -D_WIN32_WINNT=0x0A00 \
+                -D_CRT_DECLARE_NONSTDC_NAMES=0
+else
+  c.poptions += -D_FILE_OFFSET_BITS=64 -D_LARGEFILE_SOURCE
+
+if $linux
+  c.poptions += -D_GNU_SOURCE -D_POSIX_C_SOURCE=200112
+
+if $macos
+  c.poptions += -D_DARWIN_UNLIMITED_SELECT=1 -D_DARWIN_USE_64_BIT_INODE=1
+
+switch $tclass, $tsys
 {
-  c.export.poptions = "-I$src_base/include"
+  case 'linux'
+    c.libs += -pthread -ldl -lrt -lm
+
+  case 'bsd', 'netbsd'
+    c.libs += -pthread -lm -lkvm
+
+  case 'macos' | 'bsd'
+    c.libs += -pthread -lm
+
+  case 'windows', 'mingw32'
+    c.libs += -lpsapi -luser32 -ladvapi32 -liphlpapi -luserenv -lws2_32 \
+              -ldbghelp -lole32 -lshell32 -lsynchronization
+
+  case 'windows'
+    c.libs += psapi.lib user32.lib advapi32.lib iphlpapi.lib userenv.lib \
+              ws2_32.lib dbghelp.lib ole32.lib shell32.lib synchronization.lib
 }
 
-{hbmis objs}{*}: c.poptions += "-DBUILDING_UV_SHARED=1"
-libs{uv}: c.export.poptions += "-DUSING_UV_SHARED=1"
+# Export options.
+#
+lib{uv}:  c.export.poptions  = "-I$src_base/include"
+libs{uv}: c.export.poptions += -DUSING_UV_SHARED=1
 
+# Install only the public headers.
+#
 h{*}: install = false
 
 include/h{*}:
